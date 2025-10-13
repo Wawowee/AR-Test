@@ -14,7 +14,10 @@ const cbMirror = document.getElementById('cbMirror'); // now unchecked by defaul
 
 // Pad layout in sheet coordinates
 const SHEET_W = 384, SHEET_H = 288;
-const pads = [
+const SHEET_W = 384, SHEET_H = 288;
+
+// Base pad layout (as defined for the PDF, origin at bottom-left)
+const basePads = [
   { name: "Kick",    x:  64, y:  64, r: 34, sound: "sounds/kick.wav" },
   { name: "Snare",   x: 192, y:  64, r: 34, sound: "sounds/snare.wav" },
   { name: "HiHat C", x: 320, y:  64, r: 30, sound: "sounds/hihat_closed.wav" },
@@ -22,6 +25,12 @@ const pads = [
   { name: "Clap",    x: 192, y: 180, r: 32, sound: "sounds/clap.wav" },
   { name: "HiHat O", x: 320, y: 180, r: 30, sound: "sounds/hihat_open.wav" },
 ];
+
+// Use this for all rendering & hit-tests: invert Y once for screen coords
+function padsForScreen() {
+  return basePads.map(p => ({ ...p, y: (SHEET_H - p.y) }));
+}
+
 
 let audioCtx;
 const samples = new Map();
@@ -41,7 +50,7 @@ resizeCanvas();
 
 async function initAudio() {
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  for (const p of pads) {
+  for (const p of basePads) {
     const ab = await fetch(p.sound).then(r => r.arrayBuffer());
     const buf = await audioCtx.decodeAudioData(ab);
     samples.set(p.name, buf);
@@ -133,10 +142,11 @@ function overlayPxToSheet(px, py) {
 function renderOverlay(tipPx) {
   ctx.clearRect(0, 0, overlay.width, overlay.height);
 
+  const pads = padsForScreen();
   const sx = overlay.width / SHEET_W;
   const sy = overlay.height / SHEET_H;
   ctx.lineWidth = 2;
-  for (const p of pads) {
+  for (const p of basePads) {
     ctx.beginPath();
     ctx.arc(p.x * sx, p.y * sy, p.r * ((sx + sy) / 2), 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(255,255,255,0.85)";
@@ -180,7 +190,8 @@ async function loop(ts) {
       v = Math.hypot(dx, dy) / dt;
     }
     if (v > VELOCITY_THRESH) {
-      for (const p of pads) {
+      const pads = padsForScreen();
+      for (const p of basePads) {
         const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
         if (d <= p.r) {
           const vol = Math.min(1.0, Math.max(0.2, v / 220.0));
