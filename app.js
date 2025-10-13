@@ -1,6 +1,4 @@
-// Paper Drum — 6 Pads (Acoustic) — FIXED MAPPING
-// - Mirror view OFF by default (toggle if your camera feed looks flipped)
-// - Proper conversion from MediaPipe normalized coords -> overlay pixels with object-fit: cover
+// Paper Drum — 6 Pads (Acoustic) — FIXED MAPPING + Y-FLIP FOR LABELS
 
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0";
 
@@ -10,13 +8,12 @@ const ctx = overlay.getContext('2d');
 const statusEl = document.getElementById('status');
 const btnCam = document.getElementById('btnCam');
 const btnCal = document.getElementById('btnCal');
-const cbMirror = document.getElementById('cbMirror'); // now unchecked by default
+const cbMirror = document.getElementById('cbMirror'); // unchecked by default
 
-// Pad layout in sheet coordinates
-const SHEET_W = 384, SHEET_H = 288;
+// --- Coordinate space for the sheet overlay ---
 const SHEET_W = 384, SHEET_H = 288;
 
-// Base pad layout (as defined for the PDF, origin at bottom-left)
+// Base pad layout (defined for the PDF; origin effectively bottom-left)
 const basePads = [
   { name: "Kick",    x:  64, y:  64, r: 34, sound: "sounds/kick.wav" },
   { name: "Snare",   x: 192, y:  64, r: 34, sound: "sounds/snare.wav" },
@@ -26,11 +23,10 @@ const basePads = [
   { name: "HiHat O", x: 320, y: 180, r: 30, sound: "sounds/hihat_open.wav" },
 ];
 
-// Use this for all rendering & hit-tests: invert Y once for screen coords
+// Use this for all rendering & hit tests: invert Y once to match screen (top-left origin)
 function padsForScreen() {
   return basePads.map(p => ({ ...p, y: (SHEET_H - p.y) }));
 }
-
 
 let audioCtx;
 const samples = new Map();
@@ -104,7 +100,7 @@ btnCal.onclick = () => {
   statusEl.textContent = "Calibration set (identity). Keep phone square to the paper.";
 };
 
-// Compute how the video is displayed under the overlay when object-fit: cover is used.
+// --- Video → overlay mapping (accounts for object-fit: cover) ---
 function getCoverMapping(overlayW, overlayH, videoW, videoH) {
   const scale = Math.max(overlayW / videoW, overlayH / videoH);
   const displayW = videoW * scale;
@@ -114,7 +110,6 @@ function getCoverMapping(overlayW, overlayH, videoW, videoH) {
   return { displayW, displayH, offsetX, offsetY };
 }
 
-// Convert MediaPipe normalized tip (0..1) to overlay pixel coords, honoring mirror + cover mapping
 function tipToOverlayPx(tipNormX, tipNormY) {
   const overlayW = overlay.width;
   const overlayH = overlay.height;
@@ -124,7 +119,7 @@ function tipToOverlayPx(tipNormX, tipNormY) {
   const { displayW, displayH, offsetX, offsetY } =
     getCoverMapping(overlayW, overlayH, videoW, videoH);
 
-  const nx = cbMirror.checked ? (1 - tipNormX) : tipNormX; // mirror only if user toggles it
+  const nx = cbMirror.checked ? (1 - tipNormX) : tipNormX; // mirror only if toggled
   const ny = tipNormY;
 
   const px = offsetX + nx * displayW;
@@ -132,21 +127,22 @@ function tipToOverlayPx(tipNormX, tipNormY) {
   return { px, py };
 }
 
-// Map overlay pixels to sheet coordinates
+// Overlay pixels → sheet coords
 function overlayPxToSheet(px, py) {
-  const u = px / overlay.width;   // 0..1 across overlay
-  const v = py / overlay.height;  // 0..1 down overlay
+  const u = px / overlay.width;
+  const v = py / overlay.height;
   return { x: u * SHEET_W, y: v * SHEET_H };
 }
 
 function renderOverlay(tipPx) {
   ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-  const pads = padsForScreen();
+  const pads = padsForScreen();   // use Y-flipped pads
   const sx = overlay.width / SHEET_W;
   const sy = overlay.height / SHEET_H;
+
   ctx.lineWidth = 2;
-  for (const p of basePads) {
+  for (const p of pads) {
     ctx.beginPath();
     ctx.arc(p.x * sx, p.y * sy, p.r * ((sx + sy) / 2), 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(255,255,255,0.85)";
@@ -189,9 +185,10 @@ async function loop(ts) {
       const dy = tipSheet.y - lastTip.y;
       v = Math.hypot(dx, dy) / dt;
     }
+
     if (v > VELOCITY_THRESH) {
-      const pads = padsForScreen();
-      for (const p of basePads) {
+      const pads = padsForScreen();  // use Y-flipped pads
+      for (const p of pads) {
         const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
         if (d <= p.r) {
           const vol = Math.min(1.0, Math.max(0.2, v / 220.0));
