@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Paper Drum — 6 Pads</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+  <main>
+    <h1>Paper Drum — 6 Pads (Acoustic)</h1>
+    <p class="sub">Open this page on your phone and point the camera at the printed sheet. Keep the phone roughly square to the paper.</p>
+    <div class="stage">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="controls">
+      <button id="btnCam">Start Camera</button>
+      <button id="btnCal">Calibrate (simplified)</button>
+      <label class="cb"><input type="checkbox" id="cbMirror" checked/> Mirror view</label>
+      <span id="status">Idle</span>
+    </div>
+    <details>
+      <summary>Show pads & key tips</summary>
+      <ul>
+        <li>Use bright, even lighting.</li>
+        <li>Hold phone steady, about 12–18 inches above the page.</li>
+        <li>Use the index fingertip to tap circles.</li>
+      </ul>
+      <p><a href="assets/printable_paper_drum_6pad.pdf" target="_blank">Printable PDF (6 pads)</a></p>
+    </details>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
