@@ -5,6 +5,7 @@ h1 { margin: 0 0 6px 0; font-size: 26px; }
 .stage { position: relative; width: 100%; aspect-ratio: 3 / 4; background:#111; border-radius:14px; overflow:hidden; }
 #video   { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; z-index:0; }
 #overlay { position:absolute; inset:0; width:100%; height:100%; z-index:1; pointer-events:none; }
+#overlay { background: rgba(0,255,0,0.05); }  /* TEMP: should tint the camera view slightly green */
 .controls { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-top:12px; }
 button { background:#2363eb; color:#fff; border:none; padding:10px 14px; border-radius:10px; cursor:pointer; font-weight:600; }
 button:hover { filter:brightness(1.06); }
