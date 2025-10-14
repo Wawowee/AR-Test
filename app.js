@@ -447,6 +447,7 @@ for (const p of pads) {
 
   st.inside = inside;
 }
+  }
 
 
   lastTime = ts;
