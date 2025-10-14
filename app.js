@@ -36,6 +36,8 @@ let lastTime = 0;
 const cooldown = new Map();
 const COOLDOWN_MS = 120;
 const VELOCITY_THRESH = 2.0;
+let wasInside = new Map();
+
 
 function resizeCanvas() {
   overlay.width = overlay.clientWidth;
@@ -187,15 +189,29 @@ async function loop(ts) {
     }
 
     if (v > VELOCITY_THRESH) {
-      const pads = padsForScreen();  // use Y-flipped pads
-      for (const p of pads) {
-        const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
-        if (d <= p.r) {
-          const vol = Math.min(1.0, Math.max(0.2, v / 220.0));
-          play(p.name, vol);
-        }
-      }
+  const pads = padsForScreen();
+  for (const p of pads) {
+    const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
+    const inside = d <= p.r;
+    const prev = wasInside.get(p.name) || false;
+
+    // Trigger only when we newly enter the circle AND moving fast enough
+    if (inside && !prev) {
+      // map speed to volume: tune the divisor (e.g., 220) for feel
+      const vol = Math.min(1.0, Math.max(0.15, v / 220));
+      play(p.name, vol);
     }
+    wasInside.set(p.name, inside);
+  }
+} else {
+  // Even when not fast, update hover state to prevent stuck "inside"
+  const pads = padsForScreen();
+  for (const p of pads) {
+    const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
+    wasInside.set(p.name, d <= p.r);
+  }
+}
+
     lastTip = tipSheet;
   }
 
