@@ -85,6 +85,21 @@ function play(name, gain=1.0) {
   src.start();
   cooldown.set(name, now);
 }
+function debugOverlayProbe() {
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,0,0,0.7)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(overlay.width, overlay.height);
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(255,0,0,0.85)";
+  ctx.font = "14px system-ui";
+  ctx.fillText(`overlay ${overlay.width}×${overlay.height}`, 10, 20);
+  ctx.restore();
+}
+
 
 async function initCamera() {
   const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
@@ -285,32 +300,33 @@ async function onStartCamera() {
 
 async function onCalibrate() {
   statusEl.textContent = "Calibrating…";
-  await waitForOpenCV();
-
-  // 1) capture a frame from the video
-  const mat = frameToMat(video);
-
-  // 2) detect 4 corners in VIDEO coordinates
-  let cornersVideo = detectCornerSquares(mat); // [{x,y} * 4] or null
-  mat.delete();
-
-  if (!cornersVideo || cornersVideo.length !== 4) {
-    statusEl.textContent = "Couldn’t find 4 corners. Ensure all corner squares are visible & lighting is even.";
+  // If cv isn’t available in 5 seconds, show a clear error
+  const cvReady = await Promise.race([
+    waitForOpenCV().then(() => true),
+    new Promise(res => setTimeout(() => res(false), 5000))
+  ]);
+  if (!cvReady) {
+    statusEl.textContent = "OpenCV not loaded — check script tag at end of <body>.";
     H = null; calibCorners = null;
     return;
   }
 
-  // 3) order TL,TR,BR,BL in VIDEO coords
+  const mat = frameToMat(video);
+  let cornersVideo = detectCornerSquares(mat);
+  mat.delete();
+
+  if (!cornersVideo || cornersVideo.length !== 4) {
+    statusEl.textContent = "Couldn’t find corners. Show full page in steady, even lighting.";
+    H = null; calibCorners = null;
+    return;
+  }
+
   cornersVideo = orderCornersTLTRBRBL(cornersVideo);
-
-  // 4) convert VIDEO coords -> OVERLAY px (to match our fingertip px)
   const cornersOverlay = cornersVideo.map(pt => videoPtToOverlayPx(pt));
-
-  // 5) compute homography OVERLAY px -> SHEET coords
   H = computeHomographyOverlay(cornersOverlay);
-  calibCorners = cornersOverlay; // for visual debug
+  calibCorners = cornersOverlay;
   statusEl.textContent = "Calibrated ✅";
-};
+}
 
 
 // --- Video → overlay mapping (accounts for object-fit: cover) ---
@@ -380,97 +396,89 @@ if (calibCorners && calibCorners.length === 4) {
     ctx.fill();
   }
 }
+  debugOverlayProbe(); // TEMP: remove once we see it paint
 
 }
 
 async function loop(ts) {
-  if (!overlay.width || !overlay.height) {
-    resizeCanvas();
-  }
-  if (!video.videoWidth || !video.videoHeight) {
+  try {
+    if (!overlay.width || !overlay.height) resizeCanvas();
+    if (!video.videoWidth || !video.videoHeight) {
+      requestAnimationFrame(loop);
+      return;
+    }
+
+    const result = handLandmarker ? handLandmarker.detectForVideo(video, ts) : null;
+    let tipSheet = null;
+    let tipPx = null;
+
+    if (result && result.landmarks && result.landmarks.length > 0) {
+      const lm = result.landmarks[0];
+      const tip = lm[8];
+      const p = tipToOverlayPx(tip.x, tip.y);
+      tipPx = p;
+      tipSheet = H ? applyHomography(p.px, p.py) : overlayPxToSheet(p.px, p.py);
+      statusEl.textContent = "Hand OK";
+    } else {
+      statusEl.textContent = "No hand detected";
+    }
+
+    if (tipSheet) {
+      const dt = (ts - lastTime) / 1000;
+      let v = 0;
+      if (lastTip && dt > 0) {
+        const dx = tipSheet.x - lastTip.x;
+        const dy = tipSheet.y - lastTip.y;
+        v = Math.hypot(dx, dy) / dt;
+      }
+
+      // --- Hysteresis-based retriggering (your current logic) ---
+      const V_HIT = 220, V_ARM = 120, MIN_RETRIGGER_MS = 100;
+      const REQUIRE_DOWNWARD = false;
+      if (!window.__padState) window.__padState = new Map();
+      let vx = 0, vy = 0;
+      if (lastTip && dt > 0) {
+        vx = (tipSheet.x - lastTip.x) / dt;
+        vy = (tipSheet.y - lastTip.y) / dt;
+      }
+      const speed = Math.hypot(vx, vy);
+      const now = performance.now();
+
+      const pads = padsForScreen();
+      for (const p of pads) {
+        const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
+        const inside = d <= p.r;
+
+        let st = window.__padState.get(p.name);
+        if (!st) {
+          st = { armed: true, lastTrig: 0, inside: false };
+          window.__padState.set(p.name, st);
+        }
+
+        if (!inside || speed < V_ARM) st.armed = true;
+        const downOk = REQUIRE_DOWNWARD ? (vy > 0) : true;
+
+        if (st.armed && inside && speed > V_HIT && (now - st.lastTrig) > MIN_RETRIGGER_MS && downOk) {
+          const vol = Math.min(1.0, Math.max(0.15, speed / 220));
+          play(p.name, vol);
+          st.lastTrig = now;
+          st.armed = false;
+        }
+
+        st.inside = inside;
+      }
+
+      lastTip = tipSheet;
+    }
+
+    lastTime = ts;
+    renderOverlay(tipPx);
+  } catch (e) {
+    statusEl.textContent = "Loop error";
+    // Optional: console.error(e);
+  } finally {
     requestAnimationFrame(loop);
-    return;
   }
-
-  const result = handLandmarker.detectForVideo(video, ts);
-  let tipSheet = null;
-  let tipPx = null;
-
-  if (result && result.landmarks && result.landmarks.length > 0) {
-    const lm = result.landmarks[0];
-    const tip = lm[8]; // index fingertip
-    const p = tipToOverlayPx(tip.x, tip.y);
-    tipPx = p;
-
-    // If calibrated, use homography; else fall back to simple mapping
-    tipSheet = H ? applyHomography(p.px, p.py) : overlayPxToSheet(p.px, p.py);
-  }
-
-  if (tipSheet) {
-    const dt = (ts - lastTime) / 1000;
-
-    // Scalar speed (kept for reference/volume)
-    let v = 0;
-    if (lastTip && dt > 0) {
-      const dx = tipSheet.x - lastTip.x;
-      const dy = tipSheet.y - lastTip.y;
-      v = Math.hypot(dx, dy) / dt;
-    }
-
-    // --- Hysteresis-based retriggering inside pads ---
-    const V_HIT = 220;              // speed to trigger
-    const V_ARM = 120;              // speed below which we "re-arm"
-    const MIN_RETRIGGER_MS = 100;   // debounce between hits
-    const REQUIRE_DOWNWARD = false; // set true for downward-only strokes
-
-    // per-pad state container
-    if (!window.__padState) window.__padState = new Map(); // name -> { armed, lastTrig, inside }
-
-    // velocity components (re-use dt)
-    let vx = 0, vy = 0;
-    if (lastTip && dt > 0) {
-      vx = (tipSheet.x - lastTip.x) / dt;
-      vy = (tipSheet.y - lastTip.y) / dt;
-    }
-    const speed = Math.hypot(vx, vy);
-    const now = performance.now();
-
-    const pads = padsForScreen();
-
-    for (const p of pads) {
-      const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
-      const inside = d <= p.r;
-
-      let st = window.__padState.get(p.name);
-      if (!st) {
-        st = { armed: true, lastTrig: 0, inside: false };
-        window.__padState.set(p.name, st);
-      }
-
-      // Re-arm when you leave the pad OR slow down enough
-      if (!inside || speed < V_ARM) {
-        st.armed = true;
-      }
-
-      // Optional: only count strokes moving downward on screen
-      const downOk = REQUIRE_DOWNWARD ? (vy > 0) : true;
-
-      // Fire if armed, inside, fast enough, debounced, and (optionally) downward
-      if (st.armed && inside && speed > V_HIT && (now - st.lastTrig) > MIN_RETRIGGER_MS && downOk) {
-        const vol = Math.min(1.0, Math.max(0.15, speed / 220));
-        play(p.name, vol);
-        st.lastTrig = now;
-        st.armed = false; // wait until you slow down or exit to re-arm
-      }
-
-      st.inside = inside;
-    }
-
-    lastTip = tipSheet;
-  }
-
-  lastTime = ts;
-  renderOverlay(tipPx);
-  requestAnimationFrame(loop);
 }
+
 
