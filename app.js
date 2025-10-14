@@ -188,56 +188,29 @@ async function loop(ts) {
       v = Math.hypot(dx, dy) / dt;
     }
 
-    // --- Hysteresis-based retriggering inside pads ---
-const V_HIT = 220;             // speed to trigger
-const V_ARM = 120;             // speed below which we "re-arm"
-const MIN_RETRIGGER_MS = 100;  // debounce between hits
-const REQUIRE_DOWNWARD = false; // set true if you only want downward strokes
+    if (v > VELOCITY_THRESH) {
+  const pads = padsForScreen();
+  for (const p of pads) {
+    const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
+    const inside = d <= p.r;
+    const prev = wasInside.get(p.name) || false;
 
-// per-pad state container
-if (!window.__padState) window.__padState = new Map(); // name -> { armed, lastTrig, inside }
-
-// compute velocity components for optional direction checks
-const dt = (ts - lastTime) / 1000;
-let vx = 0, vy = 0;
-if (lastTip && dt > 0) {
-  vx = (tipSheet.x - lastTip.x) / dt;
-  vy = (tipSheet.y - lastTip.y) / dt;
+    // Trigger only when we newly enter the circle AND moving fast enough
+    if (inside && !prev) {
+      // map speed to volume: tune the divisor (e.g., 220) for feel
+      const vol = Math.min(1.0, Math.max(0.15, v / 220));
+      play(p.name, vol);
+    }
+    wasInside.set(p.name, inside);
+  }
+} else {
+  // Even when not fast, update hover state to prevent stuck "inside"
+  const pads = padsForScreen();
+  for (const p of pads) {
+    const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
+    wasInside.set(p.name, d <= p.r);
+  }
 }
-const speed = Math.hypot(vx, vy);
-const now = performance.now();
-
-const pads = padsForScreen();
-
-for (const p of pads) {
-  const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
-  const inside = d <= p.r;
-
-  let st = window.__padState.get(p.name);
-  if (!st) {
-    st = { armed: true, lastTrig: 0, inside: false };
-    window.__padState.set(p.name, st);
-  }
-
-  // Re-arm when you leave the pad OR slow down enough
-  if (!inside || speed < V_ARM) {
-    st.armed = true;
-  }
-
-  // Optional: only count strokes moving downward on screen
-  const downOk = REQUIRE_DOWNWARD ? (vy > 0) : true;
-
-  // Fire if armed, inside, fast enough, debounced, and (optionally) downward
-  if (st.armed && inside && speed > V_HIT && (now - st.lastTrig) > MIN_RETRIGGER_MS && downOk) {
-    const vol = Math.min(1.0, Math.max(0.15, speed / 220));
-    play(p.name, vol);
-    st.lastTrig = now;
-    st.armed = false; // wait until you slow down or exit to re-arm
-  }
-
-  st.inside = inside;
-}
-
 
     lastTip = tipSheet;
   }
