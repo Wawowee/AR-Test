@@ -398,7 +398,8 @@ tipSheet = H ? applyHomography(p.px, p.py) : overlayPxToSheet(p.px, p.py);
       v = Math.hypot(dx, dy) / dt;
     }
 
-    // --- Hysteresis-based retriggering inside pads ---
+
+// --- Hysteresis-based retriggering inside pads ---
 const V_HIT = 220;             // speed to trigger
 const V_ARM = 120;             // speed below which we "re-arm"
 const MIN_RETRIGGER_MS = 100;  // debounce between hits
@@ -407,8 +408,7 @@ const REQUIRE_DOWNWARD = false; // set true if you only want downward strokes
 // per-pad state container
 if (!window.__padState) window.__padState = new Map(); // name -> { armed, lastTrig, inside }
 
-// compute velocity components for optional direction checks
-const dt = (ts - lastTime) / 1000;
+// compute velocity components for optional direction checks (re-use dt computed earlier)
 let vx = 0, vy = 0;
 if (lastTip && dt > 0) {
   vx = (tipSheet.x - lastTip.x) / dt;
@@ -448,9 +448,6 @@ for (const p of pads) {
   st.inside = inside;
 }
 
-
-    lastTip = tipSheet;
-  }
 
   lastTime = ts;
   renderOverlay(tipPx);
