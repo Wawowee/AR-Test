@@ -16,7 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
   btnCal   = document.getElementById('btnCal');
   cbMirror = document.getElementById('cbMirror');
   
-
+resizeCanvas();
   // Wire up buttons (handlers already defined below)
   btnCam.onclick = onStartCamera;
   btnCal.onclick = onCalibrate;
@@ -384,6 +384,9 @@ if (calibCorners && calibCorners.length === 4) {
 }
 
 async function loop(ts) {
+  if (!overlay.width || !overlay.height) {
+    resizeCanvas();
+  }
   if (!video.videoWidth || !video.videoHeight) {
     requestAnimationFrame(loop);
     return;
