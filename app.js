@@ -2,32 +2,13 @@
 
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0";
 
-// ↓ Declare references; we’ll assign them after DOM is ready
-let video, overlay, ctx, statusEl, btnCam, btnCal, cbMirror;
-
-
-document.addEventListener('DOMContentLoaded', () => {
-  // Grab DOM elements after the page has built them
-  video    = document.getElementById('video');
-  overlay  = document.getElementById('overlay');
-  ctx      = overlay.getContext('2d');
-  statusEl = document.getElementById('status');
-  btnCam   = document.getElementById('btnCam');
-  btnCal   = document.getElementById('btnCal');
-  cbMirror = document.getElementById('cbMirror');
-  
-resizeCanvas();
-  // Wire up buttons (handlers already defined below)
-  btnCam.onclick = onStartCamera;
-  btnCal.onclick = onCalibrate;
-});
-function resizeCanvas() {
-  if (!overlay) return;              // guard: overlay assigned after DOMContentLoaded
-  overlay.width  = overlay.clientWidth;
-  overlay.height = overlay.clientHeight;
-}
-window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
+const video = document.getElementById('video');
+const overlay = document.getElementById('overlay');
+const ctx = overlay.getContext('2d');
+const statusEl = document.getElementById('status');
+const btnCam = document.getElementById('btnCam');
+const btnCal = document.getElementById('btnCal');
+const cbMirror = document.getElementById('cbMirror'); // unchecked by default
 
 // --- Coordinate space for the sheet overlay ---
 const SHEET_W = 384, SHEET_H = 288;
@@ -57,10 +38,13 @@ const COOLDOWN_MS = 120;
 const VELOCITY_THRESH = 2.0;
 let wasInside = new Map();
 
-// --- Calibration (homography) state ---
-let H = null;             // Float64Array length 9 (3x3) or null
-let calibCorners = null;  // debug: the 4 detected corners in overlay pixels
 
+function resizeCanvas() {
+  overlay.width = overlay.clientWidth;
+  overlay.height = overlay.clientHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
 
 async function initAudio() {
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -85,21 +69,6 @@ function play(name, gain=1.0) {
   src.start();
   cooldown.set(name, now);
 }
-function debugOverlayProbe() {
-  ctx.save();
-  ctx.strokeStyle = "rgba(255,0,0,0.7)";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(overlay.width, overlay.height);
-  ctx.stroke();
-
-  ctx.fillStyle = "rgba(255,0,0,0.85)";
-  ctx.font = "14px system-ui";
-  ctx.fillText(`overlay ${overlay.width}×${overlay.height}`, 10, 20);
-  ctx.restore();
-}
-
 
 async function initCamera() {
   const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
@@ -120,214 +89,18 @@ async function initHands() {
     runningMode: "VIDEO"
   });
 }
-// Wait until OpenCV.js is ready
-function waitForOpenCV() {
-  return new Promise((resolve) => {
-    if (window.cv && cv.getBuildInformation) return resolve();
-    const check = () => (window.cv && cv.getBuildInformation) ? resolve() : setTimeout(check, 50);
-    check();
-  });
-}
 
-// Grab a video frame into an OpenCV Mat (in the video’s native resolution)
-function frameToMat(videoEl) {
-  const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
-  const canvas = document.createElement('canvas');
-  canvas.width = vw; canvas.height = vh;
-  const c2d = canvas.getContext('2d');
-  c2d.drawImage(videoEl, 0, 0, vw, vh);
-  const imgData = c2d.getImageData(0, 0, vw, vh);
-  const mat = cv.matFromImageData(imgData);
-  return mat; // CV_8UC4
-}
-
-// Order 4 points TL, TR, BR, BL using sums/diffs
-function orderCornersTLTRBRBL(pts) {
-  // pts: [{x,y} * 4]
-  const sum = pts.map(p => p.x + p.y);
-  const diff = pts.map(p => p.x - p.y);
-  const TL = pts[sum.indexOf(Math.min(...sum))];
-  const BR = pts[sum.indexOf(Math.max(...sum))];
-  const TR = pts[diff.indexOf(Math.max(...diff))];
-  const BL = pts[diff.indexOf(Math.min(...diff))];
-  return [TL, TR, BR, BL];
-}
-
-// Convert VIDEO-space points -> OVERLAY pixels (matches how we render with object-fit: cover)
-function videoPtToOverlayPx(pt) {
-  const overlayW = overlay.width, overlayH = overlay.height;
-  const videoW = video.videoWidth || overlayW, videoH = video.videoHeight || overlayH;
-  const { displayW, displayH, offsetX, offsetY } = getCoverMapping(overlayW, overlayH, videoW, videoH);
-  const nx = pt.x / videoW, ny = pt.y / videoH;
-  return { px: offsetX + nx * displayW, py: offsetY + ny * displayH };
-}
-
-// Build 3x3 homography mapping OVERLAY pixels -> SHEET coords
-function computeHomographyOverlay(srcOverlayPts /* TL,TR,BR,BL */) {
-  // src: overlay pixels; dst: sheet coords (0,0)-(W,0)-(W,H)-(0,H)
-  const dst = [
-    {x:0,        y:0},
-    {x:SHEET_W,  y:0},
-    {x:SHEET_W,  y:SHEET_H},
-    {x:0,        y:SHEET_H}
-  ];
-
-  const srcMat = cv.matFromArray(4, 1, cv.CV_32FC2, new Float32Array([
-    srcOverlayPts[0].px, srcOverlayPts[0].py,
-    srcOverlayPts[1].px, srcOverlayPts[1].py,
-    srcOverlayPts[2].px, srcOverlayPts[2].py,
-    srcOverlayPts[3].px, srcOverlayPts[3].py,
-  ]));
-  const dstMat = cv.matFromArray(4, 1, cv.CV_32FC2, new Float32Array([
-    dst[0].x, dst[0].y,
-    dst[1].x, dst[1].y,
-    dst[2].x, dst[2].y,
-    dst[3].x, dst[3].y,
-  ]));
-
-  const Hmat = cv.getPerspectiveTransform(srcMat, dstMat); // 3x3 CV_64F
-  // Export to a plain Float64Array for fast apply
-  const out = new Float64Array(9);
-  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out[r*3+c] = Hmat.doubleAt(r, c);
-
-  srcMat.delete(); dstMat.delete(); Hmat.delete();
-  return out;
-}
-
-// Apply H to an OVERLAY pixel -> SHEET coordinate
-function applyHomography(px, py) {
-  if (!H) return { x: (px / overlay.width) * SHEET_W, y: (py / overlay.height) * SHEET_H };
-  const x = px, y = py;
-  const w = H[6]*x + H[7]*y + H[8];
-  const sx = (H[0]*x + H[1]*y + H[2]) / w;
-  const sy = (H[3]*x + H[4]*y + H[5]) / w;
-  return { x: sx, y: sy };
-}
-
-// Detect 4 largest square-ish contours (the black corner markers) in VIDEO space
-function detectCornerSquares(videoMat /* CV_8UC4 */) {
-  // Convert to gray
-  const gray = new cv.Mat();
-  cv.cvtColor(videoMat, gray, cv.COLOR_RGBA2GRAY, 0);
-
-  // Blur a bit to reduce noise
-  const blur = new cv.Mat();
-  cv.GaussianBlur(gray, blur, new cv.Size(5,5), 0);
-
-  // Adaptive threshold works across lighting
-  const bin = new cv.Mat();
-  cv.adaptiveThreshold(blur, bin, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 5);
-
-  // Find contours
-  const contours = new cv.MatVector();
-  const hierarchy = new cv.Mat();
-  cv.findContours(bin, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-
-  const vw = videoMat.cols, vh = videoMat.rows;
-  const minArea = 0.0005 * vw * vh; // ignore tiny specks
-
-  const candidates = [];
-  for (let i=0; i<contours.size(); i++) {
-    const cnt = contours.get(i);
-    const peri = cv.arcLength(cnt, true);
-    const approx = new cv.Mat();
-    cv.approxPolyDP(cnt, approx, 0.03 * peri, true);
-
-    if (approx.rows === 4 && cv.isContourConvex(approx)) {
-      const area = cv.contourArea(approx);
-      if (area > minArea) {
-        // Get bounding rect to check squareness
-        const rect = cv.boundingRect(approx);
-        const ar = rect.width / rect.height;
-        const squarish = ar > 0.6 && ar < 1.4;
-
-        if (squarish) {
-          // Use centroid as point location
-          let cx = 0, cy = 0;
-          for (let j=0; j<4; j++) {
-            const px = approx.intPtr(j,0)[0];
-            const py = approx.intPtr(j,0)[1];
-            cx += px; cy += py;
-          }
-          cx /= 4; cy /= 4;
-          candidates.push({ area, rect, cx, cy, approx });
-        }
-      }
-    }
-
-    approx.delete();
-    cnt.delete();
-  }
-
-  // Sort by area (largest first), take top 6, then pick the 4 that are most "spread out"
-  candidates.sort((a,b) => b.area - a.area);
-  const top = candidates.slice(0, 6);
-
-  if (top.length < 4) {
-    gray.delete(); blur.delete(); bin.delete(); contours.delete(); hierarchy.delete();
-    return null;
-  }
-
-  // Choose 4 by maximizing pairwise distances (greedy)
-  let bestSet = null, bestScore = -1;
-  const pts = top.map(t => ({ x: t.cx, y: t.cy }));
-  for (let i=0;i<pts.length;i++)
-    for (let j=i+1;j<pts.length;j++)
-      for (let k=j+1;k<pts.length;k++)
-        for (let l=k+1;l<pts.length;l++) {
-          const set = [pts[i], pts[j], pts[k], pts[l]];
-          // score = sum of squared distances (spread)
-          let s=0;
-          for (let a=0;a<4;a++) for (let b=a+1;b<4;b++) {
-            const dx = set[a].x - set[b].x, dy = set[a].y - set[b].y;
-            s += dx*dx + dy*dy;
-          }
-          if (s > bestScore) { bestScore = s; bestSet = set; }
-        }
-
-  gray.delete(); blur.delete(); bin.delete(); contours.delete(); hierarchy.delete();
-  return bestSet; // 4 points in VIDEO coords, unordered
-}
-
-
-async function onStartCamera() {
+btnCam.onclick = async () => {
   await initCamera();
   if (!audioCtx) await initAudio();
   if (!handLandmarker) await initHands();
   statusEl.textContent = "Camera on — show the printed sheet and tap a pad.";
   requestAnimationFrame(loop);
-}
+};
 
-async function onCalibrate() {
-  statusEl.textContent = "Calibrating…";
-  // If cv isn’t available in 5 seconds, show a clear error
-  const cvReady = await Promise.race([
-    waitForOpenCV().then(() => true),
-    new Promise(res => setTimeout(() => res(false), 5000))
-  ]);
-  if (!cvReady) {
-    statusEl.textContent = "OpenCV not loaded — check script tag at end of <body>.";
-    H = null; calibCorners = null;
-    return;
-  }
-
-  const mat = frameToMat(video);
-  let cornersVideo = detectCornerSquares(mat);
-  mat.delete();
-
-  if (!cornersVideo || cornersVideo.length !== 4) {
-    statusEl.textContent = "Couldn’t find corners. Show full page in steady, even lighting.";
-    H = null; calibCorners = null;
-    return;
-  }
-
-  cornersVideo = orderCornersTLTRBRBL(cornersVideo);
-  const cornersOverlay = cornersVideo.map(pt => videoPtToOverlayPx(pt));
-  H = computeHomographyOverlay(cornersOverlay);
-  calibCorners = cornersOverlay;
-  statusEl.textContent = "Calibrated ✅";
-}
-
+btnCal.onclick = () => {
+  statusEl.textContent = "Calibration set (identity). Keep phone square to the paper.";
+};
 
 // --- Video → overlay mapping (accounts for object-fit: cover) ---
 function getCoverMapping(overlayW, overlayH, videoW, videoH) {
@@ -387,98 +160,89 @@ function renderOverlay(tipPx) {
     ctx.fillStyle = "rgba(0,200,255,0.95)";
     ctx.fill();
   }
-  // Debug: show detected corner dots after calibration
-if (calibCorners && calibCorners.length === 4) {
-  ctx.fillStyle = "rgba(0,255,120,0.9)";
-  for (const c of calibCorners) {
-    ctx.beginPath();
-    ctx.arc(c.px, c.py, 6, 0, Math.PI*2);
-    ctx.fill();
-  }
-}
-  debugOverlayProbe(); // TEMP: remove once we see it paint
-
 }
 
 async function loop(ts) {
-  try {
-    if (!overlay.width || !overlay.height) resizeCanvas();
-    if (!video.videoWidth || !video.videoHeight) {
-      requestAnimationFrame(loop);
-      return;
-    }
-
-    const result = handLandmarker ? handLandmarker.detectForVideo(video, ts) : null;
-    let tipSheet = null;
-    let tipPx = null;
-
-    if (result && result.landmarks && result.landmarks.length > 0) {
-      const lm = result.landmarks[0];
-      const tip = lm[8];
-      const p = tipToOverlayPx(tip.x, tip.y);
-      tipPx = p;
-      tipSheet = H ? applyHomography(p.px, p.py) : overlayPxToSheet(p.px, p.py);
-      statusEl.textContent = "Hand OK";
-    } else {
-      statusEl.textContent = "No hand detected";
-    }
-
-    if (tipSheet) {
-      const dt = (ts - lastTime) / 1000;
-      let v = 0;
-      if (lastTip && dt > 0) {
-        const dx = tipSheet.x - lastTip.x;
-        const dy = tipSheet.y - lastTip.y;
-        v = Math.hypot(dx, dy) / dt;
-      }
-
-      // --- Hysteresis-based retriggering (your current logic) ---
-      const V_HIT = 220, V_ARM = 120, MIN_RETRIGGER_MS = 100;
-      const REQUIRE_DOWNWARD = false;
-      if (!window.__padState) window.__padState = new Map();
-      let vx = 0, vy = 0;
-      if (lastTip && dt > 0) {
-        vx = (tipSheet.x - lastTip.x) / dt;
-        vy = (tipSheet.y - lastTip.y) / dt;
-      }
-      const speed = Math.hypot(vx, vy);
-      const now = performance.now();
-
-      const pads = padsForScreen();
-      for (const p of pads) {
-        const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
-        const inside = d <= p.r;
-
-        let st = window.__padState.get(p.name);
-        if (!st) {
-          st = { armed: true, lastTrig: 0, inside: false };
-          window.__padState.set(p.name, st);
-        }
-
-        if (!inside || speed < V_ARM) st.armed = true;
-        const downOk = REQUIRE_DOWNWARD ? (vy > 0) : true;
-
-        if (st.armed && inside && speed > V_HIT && (now - st.lastTrig) > MIN_RETRIGGER_MS && downOk) {
-          const vol = Math.min(1.0, Math.max(0.15, speed / 220));
-          play(p.name, vol);
-          st.lastTrig = now;
-          st.armed = false;
-        }
-
-        st.inside = inside;
-      }
-
-      lastTip = tipSheet;
-    }
-
-    lastTime = ts;
-    renderOverlay(tipPx);
-  } catch (e) {
-    statusEl.textContent = "Loop error";
-    // Optional: console.error(e);
-  } finally {
+  if (!video.videoWidth || !video.videoHeight) {
     requestAnimationFrame(loop);
+    return;
   }
+  const result = handLandmarker.detectForVideo(video, ts);
+  let tipSheet = null;
+  let tipPx = null;
+
+  if (result && result.landmarks && result.landmarks.length > 0) {
+    const lm = result.landmarks[0];
+    const tip = lm[8]; // index fingertip
+    const p = tipToOverlayPx(tip.x, tip.y);
+    tipPx = p;
+    tipSheet = overlayPxToSheet(p.px, p.py);
+  }
+
+  if (tipSheet) {
+    const dt = (ts - lastTime) / 1000;
+    let v = 0;
+    if (lastTip && dt > 0) {
+      const dx = tipSheet.x - lastTip.x;
+      const dy = tipSheet.y - lastTip.y;
+      v = Math.hypot(dx, dy) / dt;
+    }
+
+    // --- Hysteresis-based retriggering inside pads ---
+const V_HIT = 220;             // speed to trigger
+const V_ARM = 120;             // speed below which we "re-arm"
+const MIN_RETRIGGER_MS = 100;  // debounce between hits
+const REQUIRE_DOWNWARD = false; // set true if you only want downward strokes
+
+// per-pad state container
+if (!window.__padState) window.__padState = new Map(); // name -> { armed, lastTrig, inside }
+
+// compute velocity components for optional direction checks
+const dt = (ts - lastTime) / 1000;
+let vx = 0, vy = 0;
+if (lastTip && dt > 0) {
+  vx = (tipSheet.x - lastTip.x) / dt;
+  vy = (tipSheet.y - lastTip.y) / dt;
+}
+const speed = Math.hypot(vx, vy);
+const now = performance.now();
+
+const pads = padsForScreen();
+
+for (const p of pads) {
+  const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
+  const inside = d <= p.r;
+
+  let st = window.__padState.get(p.name);
+  if (!st) {
+    st = { armed: true, lastTrig: 0, inside: false };
+    window.__padState.set(p.name, st);
+  }
+
+  // Re-arm when you leave the pad OR slow down enough
+  if (!inside || speed < V_ARM) {
+    st.armed = true;
+  }
+
+  // Optional: only count strokes moving downward on screen
+  const downOk = REQUIRE_DOWNWARD ? (vy > 0) : true;
+
+  // Fire if armed, inside, fast enough, debounced, and (optionally) downward
+  if (st.armed && inside && speed > V_HIT && (now - st.lastTrig) > MIN_RETRIGGER_MS && downOk) {
+    const vol = Math.min(1.0, Math.max(0.15, speed / 220));
+    play(p.name, vol);
+    st.lastTrig = now;
+    st.armed = false; // wait until you slow down or exit to re-arm
+  }
+
+  st.inside = inside;
 }
 
 
+    lastTip = tipSheet;
+  }
+
+  lastTime = ts;
+  renderOverlay(tipPx);
+  requestAnimationFrame(loop);
+}
