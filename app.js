@@ -4,6 +4,8 @@ import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@m
 
 // ↓ Declare references; we’ll assign them after DOM is ready
 let video, overlay, ctx, statusEl, btnCam, btnCal, cbMirror;
+
+
 document.addEventListener('DOMContentLoaded', () => {
   // Grab DOM elements after the page has built them
   video    = document.getElementById('video');
@@ -13,19 +15,19 @@ document.addEventListener('DOMContentLoaded', () => {
   btnCam   = document.getElementById('btnCam');
   btnCal   = document.getElementById('btnCal');
   cbMirror = document.getElementById('cbMirror');
-
-  // Size the canvas and listen for resizes
-  function resizeCanvas() {
-    overlay.width  = overlay.clientWidth;
-    overlay.height = overlay.clientHeight;
-  }
-  window.addEventListener('resize', resizeCanvas);
-  resizeCanvas();
+  
 
   // Wire up buttons (handlers already defined below)
   btnCam.onclick = onStartCamera;
   btnCal.onclick = onCalibrate;
 });
+function resizeCanvas() {
+  if (!overlay) return;              // guard: overlay assigned after DOMContentLoaded
+  overlay.width  = overlay.clientWidth;
+  overlay.height = overlay.clientHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
 
 // --- Coordinate space for the sheet overlay ---
 const SHEET_W = 384, SHEET_H = 288;
