@@ -2,13 +2,30 @@
 
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0";
 
-const video = document.getElementById('video');
-const overlay = document.getElementById('overlay');
-const ctx = overlay.getContext('2d');
-const statusEl = document.getElementById('status');
-const btnCam = document.getElementById('btnCam');
-const btnCal = document.getElementById('btnCal');
-const cbMirror = document.getElementById('cbMirror'); // unchecked by default
+// ↓ Declare references; we’ll assign them after DOM is ready
+let video, overlay, ctx, statusEl, btnCam, btnCal, cbMirror;
+document.addEventListener('DOMContentLoaded', () => {
+  // Grab DOM elements after the page has built them
+  video    = document.getElementById('video');
+  overlay  = document.getElementById('overlay');
+  ctx      = overlay.getContext('2d');
+  statusEl = document.getElementById('status');
+  btnCam   = document.getElementById('btnCam');
+  btnCal   = document.getElementById('btnCal');
+  cbMirror = document.getElementById('cbMirror');
+
+  // Size the canvas and listen for resizes
+  function resizeCanvas() {
+    overlay.width  = overlay.clientWidth;
+    overlay.height = overlay.clientHeight;
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // Wire up buttons (handlers already defined below)
+  btnCam.onclick = onStartCamera;
+  btnCal.onclick = onCalibrate;
+});
 
 // --- Coordinate space for the sheet overlay ---
 const SHEET_W = 384, SHEET_H = 288;
@@ -42,13 +59,6 @@ let wasInside = new Map();
 let H = null;             // Float64Array length 9 (3x3) or null
 let calibCorners = null;  // debug: the 4 detected corners in overlay pixels
 
-
-function resizeCanvas() {
-  overlay.width = overlay.clientWidth;
-  overlay.height = overlay.clientHeight;
-}
-window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
 
 async function initAudio() {
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -263,15 +273,15 @@ function detectCornerSquares(videoMat /* CV_8UC4 */) {
 }
 
 
-btnCam.onclick = async () => {
+async function onStartCamera() {
   await initCamera();
   if (!audioCtx) await initAudio();
   if (!handLandmarker) await initHands();
   statusEl.textContent = "Camera on — show the printed sheet and tap a pad.";
   requestAnimationFrame(loop);
-};
+}
 
-btnCal.onclick = async () => {
+async function onCalibrate() {
   statusEl.textContent = "Calibrating…";
   await waitForOpenCV();
 
