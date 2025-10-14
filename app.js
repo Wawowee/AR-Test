@@ -376,6 +376,7 @@ async function loop(ts) {
     requestAnimationFrame(loop);
     return;
   }
+
   const result = handLandmarker.detectForVideo(video, ts);
   let tipSheet = null;
   let tipPx = null;
@@ -385,12 +386,15 @@ async function loop(ts) {
     const tip = lm[8]; // index fingertip
     const p = tipToOverlayPx(tip.x, tip.y);
     tipPx = p;
+
     // If calibrated, use homography; else fall back to simple mapping
-tipSheet = H ? applyHomography(p.px, p.py) : overlayPxToSheet(p.px, p.py);
+    tipSheet = H ? applyHomography(p.px, p.py) : overlayPxToSheet(p.px, p.py);
   }
 
   if (tipSheet) {
     const dt = (ts - lastTime) / 1000;
+
+    // Scalar speed (kept for reference/volume)
     let v = 0;
     if (lastTip && dt > 0) {
       const dx = tipSheet.x - lastTip.x;
@@ -398,59 +402,60 @@ tipSheet = H ? applyHomography(p.px, p.py) : overlayPxToSheet(p.px, p.py);
       v = Math.hypot(dx, dy) / dt;
     }
 
+    // --- Hysteresis-based retriggering inside pads ---
+    const V_HIT = 220;              // speed to trigger
+    const V_ARM = 120;              // speed below which we "re-arm"
+    const MIN_RETRIGGER_MS = 100;   // debounce between hits
+    const REQUIRE_DOWNWARD = false; // set true for downward-only strokes
 
-// --- Hysteresis-based retriggering inside pads ---
-const V_HIT = 220;             // speed to trigger
-const V_ARM = 120;             // speed below which we "re-arm"
-const MIN_RETRIGGER_MS = 100;  // debounce between hits
-const REQUIRE_DOWNWARD = false; // set true if you only want downward strokes
+    // per-pad state container
+    if (!window.__padState) window.__padState = new Map(); // name -> { armed, lastTrig, inside }
 
-// per-pad state container
-if (!window.__padState) window.__padState = new Map(); // name -> { armed, lastTrig, inside }
+    // velocity components (re-use dt)
+    let vx = 0, vy = 0;
+    if (lastTip && dt > 0) {
+      vx = (tipSheet.x - lastTip.x) / dt;
+      vy = (tipSheet.y - lastTip.y) / dt;
+    }
+    const speed = Math.hypot(vx, vy);
+    const now = performance.now();
 
-// compute velocity components for optional direction checks (re-use dt computed earlier)
-let vx = 0, vy = 0;
-if (lastTip && dt > 0) {
-  vx = (tipSheet.x - lastTip.x) / dt;
-  vy = (tipSheet.y - lastTip.y) / dt;
-}
-const speed = Math.hypot(vx, vy);
-const now = performance.now();
+    const pads = padsForScreen();
 
-const pads = padsForScreen();
+    for (const p of pads) {
+      const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
+      const inside = d <= p.r;
 
-for (const p of pads) {
-  const d = Math.hypot(tipSheet.x - p.x, tipSheet.y - p.y);
-  const inside = d <= p.r;
+      let st = window.__padState.get(p.name);
+      if (!st) {
+        st = { armed: true, lastTrig: 0, inside: false };
+        window.__padState.set(p.name, st);
+      }
 
-  let st = window.__padState.get(p.name);
-  if (!st) {
-    st = { armed: true, lastTrig: 0, inside: false };
-    window.__padState.set(p.name, st);
+      // Re-arm when you leave the pad OR slow down enough
+      if (!inside || speed < V_ARM) {
+        st.armed = true;
+      }
+
+      // Optional: only count strokes moving downward on screen
+      const downOk = REQUIRE_DOWNWARD ? (vy > 0) : true;
+
+      // Fire if armed, inside, fast enough, debounced, and (optionally) downward
+      if (st.armed && inside && speed > V_HIT && (now - st.lastTrig) > MIN_RETRIGGER_MS && downOk) {
+        const vol = Math.min(1.0, Math.max(0.15, speed / 220));
+        play(p.name, vol);
+        st.lastTrig = now;
+        st.armed = false; // wait until you slow down or exit to re-arm
+      }
+
+      st.inside = inside;
+    }
+
+    lastTip = tipSheet;
   }
-
-  // Re-arm when you leave the pad OR slow down enough
-  if (!inside || speed < V_ARM) {
-    st.armed = true;
-  }
-
-  // Optional: only count strokes moving downward on screen
-  const downOk = REQUIRE_DOWNWARD ? (vy > 0) : true;
-
-  // Fire if armed, inside, fast enough, debounced, and (optionally) downward
-  if (st.armed && inside && speed > V_HIT && (now - st.lastTrig) > MIN_RETRIGGER_MS && downOk) {
-    const vol = Math.min(1.0, Math.max(0.15, speed / 220));
-    play(p.name, vol);
-    st.lastTrig = now;
-    st.armed = false; // wait until you slow down or exit to re-arm
-  }
-
-  st.inside = inside;
-}
-  }
-
 
   lastTime = ts;
   renderOverlay(tipPx);
   requestAnimationFrame(loop);
 }
+
